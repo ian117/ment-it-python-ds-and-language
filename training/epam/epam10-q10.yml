@@ -1,0 +1,56 @@
+# =============================================================
+# P10 — Docker, Compose y orquestación
+# =============================================================
+# "¿Cómo orquestarías un Dockerfile y un compose en algo como esto?"
+#
+#     app1 -> tms (la app principal)
+#     app2 -> email service
+#     db   -> postgres
+#     cache-> redis
+#
+# Preguntó ESPECÍFICAMENTE por el `volume` y el `network` que van
+# dentro del YAML. Esas dos son las que hay que clavar.
+#
+# TU TAREA
+#   1. Escribe el Dockerfile de tms. Multi-stage. ¿Por qué dos
+#      etapas? ¿Por qué usuario no-root? ¿Para qué el HEALTHCHECK?
+#   2. Escribe el compose completo abajo, con los 4 servicios.
+#   3. VOLUMES — explica los 3 tipos y cuál usas para qué:
+#        - named volume
+#        - bind mount
+#        - tmpfs
+#      ¿Qué pasa con los datos de Postgres si NO pones volumen y
+#      haces `docker compose down`?
+#   4. NETWORKS — ¿cómo se encuentran los servicios entre sí?
+#      ¿A qué host se conecta la app: localhost, una IP, o qué?
+#      Y la pregunta clave: ¿qué significa que un servicio NO
+#      tenga `ports:`? ¿Debe Postgres publicar el 5432?
+#   5. `depends_on` a secas no basta. ¿Por qué? ¿Qué le añades?
+#   6. ¿Dónde van los secretos? (y dónde NO)
+#   7. ¿Cuándo dejas Compose y pasas a Kubernetes? Nombra los
+#      objetos de K8s que reemplazan a cada pieza del compose.
+#      Matiz que suma: ¿correrías Postgres en el clúster?
+#
+#   8. (E16) El email-service necesita leer plantillas de correo
+#      desde una carpeta del host que el equipo edita a diario, y
+#      guardar un log de envíos que sobreviva a `docker compose
+#      down`. Escribe su sección `volumes` y justifica cada tipo.
+#
+#   9. 💬 (E17) Quieres que Postgres NO sea alcanzable desde tu
+#      máquina pero sí desde tms, y que un nginx sea el único
+#      expuesto al exterior. Define las networks y di qué servicio
+#      va en cuál.
+# =============================================================
+
+services:
+  # tms:
+
+  # email:
+
+  # db:
+
+  # cache:
+
+volumes:
+
+networks:
