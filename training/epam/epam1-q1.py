@@ -25,26 +25,24 @@ readings = [("mx", 30), ("ny", 10), ("mx", 20), ("ny", 14), ("bcn", 25)]
 #   por cada ciudad, div valor/#instancias encontradas y guardar
 #  Ya con la info, formatear el string f"City 1 : numero, City 2: numero"
 
-
+from collections import defaultdict
 
 def average_by_city(readings):
-    citySearch = {} # { city:"london", count: #, valueRaw: # }
     formattedStr = ''
-    for i, item in enumerate(readings):
-        if citySearch.get(readings[i][0]) == None:
-            citySearch[readings[i][0]] = { 'count': 1, 'valueRaw': readings[i][1] }
-        else:
-            citySearch[readings[i][0]]['count'] += 1
-            citySearch[readings[i][0]]['valueRaw'] += readings[i][1]
+    sums, counts = defaultdict(float),defaultdict(int)
+    for city, temp in readings:
+        sums[city] += temp
+        counts[city] += 1
     
+    avgDicc = {city: sums[city] / counts[city] for city in sums}
+
     start = True
-    for clave in citySearch:
-        citySearch[clave]['avg'] = (citySearch[clave]['valueRaw'] / citySearch[clave]['count'])
-        if start:
-          formattedStr += f'{clave}: {citySearch[clave]["avg"]}'
-          start = False
-        else:
-          formattedStr += f', {clave}: {citySearch[clave]["avg"]}'
+    for city,avg in avgDicc.items():
+      if start:
+        formattedStr = f"{city}: {avg}, "
+        start = False
+      else:
+         formattedStr += f" {city}: {avg},"
           
     return formattedStr
         
