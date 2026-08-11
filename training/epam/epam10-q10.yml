@@ -1,56 +1,271 @@
 # =============================================================
-# P10 — Docker, Compose y orquestación
+# P10 — Docker, Compose y orquestación  ·  RESUELTO
 # =============================================================
 # "¿Cómo orquestarías un Dockerfile y un compose en algo como esto?"
+#     app1 -> tms | app2 -> email service | db -> pg | cache -> redis
 #
-#     app1 -> tms (la app principal)
-#     app2 -> email service
-#     db   -> postgres
-#     cache-> redis
+# Preguntó ESPECÍFICAMENTE por el `volume` y el `network`.
+# Están resueltos abajo, en los puntos 3 y 4.
 #
-# Preguntó ESPECÍFICAMENTE por el `volume` y el `network` que van
-# dentro del YAML. Esas dos son las que hay que clavar.
+# ANALOGÍA: el Dockerfile es la receta, la imagen es el platillo
+# empaquetado y el contenedor es el platillo servido. Compose es
+# el mesero que sirve cuatro platillos coordinados en la misma
+# mesa; Kubernetes es el gerente de una cadena que abre sucursales
+# solo, reemplaza cocineros enfermos y ajusta el personal según la
+# fila en la puerta.
 #
-# TU TAREA
-#   1. Escribe el Dockerfile de tms. Multi-stage. ¿Por qué dos
-#      etapas? ¿Por qué usuario no-root? ¿Para qué el HEALTHCHECK?
-#   2. Escribe el compose completo abajo, con los 4 servicios.
-#   3. VOLUMES — explica los 3 tipos y cuál usas para qué:
-#        - named volume
-#        - bind mount
-#        - tmpfs
-#      ¿Qué pasa con los datos de Postgres si NO pones volumen y
-#      haces `docker compose down`?
-#   4. NETWORKS — ¿cómo se encuentran los servicios entre sí?
-#      ¿A qué host se conecta la app: localhost, una IP, o qué?
-#      Y la pregunta clave: ¿qué significa que un servicio NO
-#      tenga `ports:`? ¿Debe Postgres publicar el 5432?
-#   5. `depends_on` a secas no basta. ¿Por qué? ¿Qué le añades?
-#   6. ¿Dónde van los secretos? (y dónde NO)
-#   7. ¿Cuándo dejas Compose y pasas a Kubernetes? Nombra los
-#      objetos de K8s que reemplazan a cada pieza del compose.
-#      Matiz que suma: ¿correrías Postgres en el clúster?
+# -------------------------------------------------------------
+# 1. EL DOCKERFILE (multi-stage)
+# -------------------------------------------------------------
+#   FROM python:3.12-slim AS builder
+#   WORKDIR /app
+#   COPY requirements.txt .
+#   RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 #
-#   8. (E16) El email-service necesita leer plantillas de correo
-#      desde una carpeta del host que el equipo edita a diario, y
-#      guardar un log de envíos que sobreviva a `docker compose
-#      down`. Escribe su sección `volumes` y justifica cada tipo.
+#   FROM python:3.12-slim
+#   RUN useradd -m appuser
+#   COPY --from=builder /install /usr/local
+#   WORKDIR /app
+#   COPY . .
+#   USER appuser
+#   EXPOSE 8000
+#   HEALTHCHECK --interval=30s --timeout=3s \
+#       CMD curl -f http://localhost:8000/health || exit 1
+#   CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
 #
-#   9. 💬 (E17) Quieres que Postgres NO sea alcanzable desde tu
-#      máquina pero sí desde tms, y que un nginx sea el único
-#      expuesto al exterior. Define las networks y di qué servicio
-#      va en cuál.
+# ¿POR QUÉ DOS ETAPAS? Compilar dependencias necesita gcc, headers
+# y herramientas de build. Ejecutarlas no. La etapa `builder` se
+# descarta entera y en la imagen final solo entran los artefactos
+# compilados. Resultado: imagen mucho más chica (menos ancho de
+# banda, arranques más rápidos) y menor SUPERFICIE DE ATAQUE —
+# un compilador dentro de un contenedor en producción es una
+# herramienta gratis para quien logre entrar.
+#
+# ¿POR QUÉ USUARIO NO-ROOT? Por defecto los contenedores corren
+# como root. Si alguien logra RCE en tu app, es root dentro del
+# contenedor — y con eso más un escape de kernel o un socket de
+# Docker montado, es root en el host. `USER appuser` es una línea
+# y corta esa cadena. Defensa en profundidad.
+#
+# ¿PARA QUÉ EL HEALTHCHECK? Un proceso vivo no es una app lista:
+# gunicorn puede estar arrancado y la app sin poder hablar con la
+# BD. El healthcheck define QUÉ SIGNIFICA "listo" para esta app, y
+# Compose lo usa en `depends_on: condition: service_healthy`
+# (punto 5). En K8s es el equivalente a readiness/liveness probes.
+#
+# ORDEN DE LAS CAPAS: `COPY requirements.txt` va ANTES de
+# `COPY . .` a propósito. Docker cachea por capa: así un cambio en
+# tu código no invalida la capa de `pip install`. Si copias todo
+# primero, reinstalas dependencias en cada build.
 # =============================================================
 
 services:
-  # tms:
+  tms:
+    build: ./tms
+    env_file: .env
+    environment:
+      # Fíjate en los HOSTS: `db` y `cache` son NOMBRES DE SERVICIO,
+      # no IPs ni localhost. Ver punto 4.
+      DATABASE_URL: postgresql://app:${DB_PASSWORD}@db:5432/tms
+      REDIS_URL: redis://cache:6379/0
+      EMAIL_SERVICE_URL: http://email:8001
+    ports: ["8000:8000"]          # el único junto a nginx que se expone
+    depends_on:
+      db:    { condition: service_healthy }
+      cache: { condition: service_healthy }
+    networks: [backend]
+    restart: unless-stopped
 
-  # email:
+  email:
+    build: ./email-service
+    environment:
+      REDIS_URL: redis://cache:6379/1        # DB 1: aislado de la app
+    volumes:
+      # --- (E16) resuelto ---
+      - ./templates:/app/templates:ro   # BIND MOUNT RO: el equipo edita
+                                        # las plantillas en el host y el
+                                        # cambio se ve sin rebuild.
+                                        # `:ro` porque el contenedor solo
+                                        # lee -> un bug no puede
+                                        # sobrescribir el fuente.
+      - maillogs:/app/logs              # NAMED VOLUME: lo gestiona Docker,
+                                        # es independiente del ciclo de
+                                        # vida del contenedor y SOBREVIVE
+                                        # a `docker compose down`
+                                        # (solo `down -v` lo borra).
+    depends_on:
+      cache: { condition: service_healthy }
+    networks: [backend]               # sin `ports`: no se expone al host
+    restart: unless-stopped
+    # MATIZ DE PRODUCCIÓN: los logs de una app normalmente van a
+    # stdout y los recoge el driver de logging, no a un volumen.
+    # El volumen es aceptable si es un log de NEGOCIO auditable.
 
-  # db:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tms
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}      # de .env, nunca hardcodeado
+    volumes:
+      - pgdata:/var/lib/postgresql/data                       # named volume
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro    # bind mount RO
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d tms"]
+      interval: 5s
+      retries: 5
+    networks: [backend]
+    # SIN `ports:` -> Postgres NO es alcanzable desde tu máquina.
+    # En producción esto no se negocia.
 
-  # cache:
+  cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]   # persistencia AOF
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+    networks: [backend]
 
 volumes:
+  pgdata:
+  redisdata:
+  maillogs:
 
 networks:
+  backend:
+    driver: bridge
+
+# =============================================================
+# 3. VOLUMES  (pregunta explícita del entrevistador)
+# =============================================================
+# EL PUNTO DE PARTIDA: el filesystem de un contenedor es EFÍMERO.
+# Vive y muere con el contenedor. Si haces `docker compose down`
+# sin volumen, PIERDES LA BASE DE DATOS ENTERA. Ni siquiera hace
+# falta un `down`: un `docker compose up --force-recreate` tras
+# cambiar la imagen basta.
+#
+# TRES TIPOS:
+#
+#   NAMED VOLUME   pgdata:/var/lib/postgresql/data
+#     Docker lo gestiona en su propio directorio. Independiente
+#     del contenedor, sobrevive a `down`, se respalda y se mueve
+#     como una unidad. ES EL CORRECTO PARA BASES DE DATOS.
+#     Solo `docker compose down -v` lo elimina.
+#
+#   BIND MOUNT     ./src:/app
+#     Mapea una carpeta REAL del host dentro del contenedor. Ideal
+#     para hot-reload en desarrollo: editas y el contenedor lo ve.
+#     Mala idea en producción: acoplas el contenedor a la
+#     estructura de carpetas de una máquina concreta y los
+#     permisos (UID/GID) empiezan a dar problemas.
+#     Añade `:ro` cuando el contenedor solo lee.
+#
+#   TMPFS          en RAM, desaparece al parar el contenedor.
+#     Para datos sensibles y efímeros (secretos descifrados,
+#     archivos temporales que no deben tocar disco).
+#
+# =============================================================
+# 4. NETWORKS  (la otra pregunta explícita)
+# =============================================================
+# Compose crea una red por defecto donde todos los servicios se
+# ven POR NOMBRE DE SERVICIO. La app se conecta a `db:5432`, NO a
+# localhost ni a una IP.
+#
+# ¿Por qué no localhost? Porque cada contenedor tiene su propio
+# namespace de red: `localhost` dentro de tms es tms, no la BD.
+# ¿Por qué no una IP? Porque cambia en cada recreación.
+#
+# Docker corre un DNS interno que resuelve el nombre del servicio
+# a la IP actual del contenedor. ESE DNS ES LO QUE HACE QUE TODO
+# ESTO FUNCIONE — es la respuesta a "¿cómo se encuentran entre sí?"
+#
+# DEFINIR REDES EXPLÍCITAS PERMITE SEGMENTAR: dos servicios que no
+# comparten red no pueden verse. Ni siquiera se resuelven.
+#
+# --- Y LO MÁS IMPORTANTE: `ports:` ---------------------------
+# `ports: ["5432:5432"]` publica el puerto EN EL HOST. Sin esa
+# línea, el servicio sigue siendo accesible desde la red interna
+# (tms habla con db:5432 sin problema) pero NO desde tu máquina
+# ni desde fuera.
+#
+# Postgres NUNCA debe publicar el 5432 en producción. Si lo haces
+# en un servidor con IP pública, acabas de exponer tu BD a
+# internet — y los bots la encuentran en minutos.
+#
+# Regla mental: `ports` = puerta a la calle. `networks` = pasillos
+# internos. `expose` documenta pero no publica.
+#
+# =============================================================
+# 💬 5-E17 — nginx único expuesto, Postgres inalcanzable
+# =============================================================
+#   networks:
+#     frontend:   # nginx + tms
+#     backend:    # tms + email + db + cache
+#
+#   nginx: networks [frontend]           CON ports ["80:80","443:443"]
+#   tms:   networks [frontend, backend]  SIN ports   <- el puente
+#   email: networks [backend]            SIN ports
+#   db:    networks [backend]            SIN ports
+#   cache: networks [backend]            SIN ports
+#
+# `tms` pertenece a las DOS redes: recibe tráfico de nginx y habla
+# con la BD. Es el único punto de cruce.
+#
+# Lo que se gana con la segmentación, más allá de ocultar la BD:
+# si comprometen nginx (que es lo expuesto a internet), el
+# atacante NO puede alcanzar Postgres — nginx no está en
+# `backend`, así que ni siquiera resuelve el nombre `db`.
+# Eso es DEFENSA EN PROFUNDIDAD: asumes que la primera capa caerá.
+#
+# =============================================================
+# 5. ¿POR QUÉ `depends_on` A SECAS NO BASTA?
+# =============================================================
+# `depends_on` solo espera a que el contenedor ARRANQUE, no a que
+# el servicio esté LISTO. Postgres tarda segundos en aceptar
+# conexiones después de que el proceso existe.
+#
+# Resultado: tms arranca, intenta conectar, falla y muere. Con
+# `restart: unless-stopped` acaba funcionando tras varios
+# reinicios, pero los logs quedan llenos de errores falsos y en
+# CI el arranque es una lotería.
+#
+# La solución son los HEALTHCHECK + `condition: service_healthy`.
+# Aun así, la app debería tener REINTENTOS al conectar: en
+# producción la BD puede reiniciarse en cualquier momento y tu
+# app tiene que sobrevivirlo, no solo al arranque inicial.
+#
+# =============================================================
+# 6. SECRETOS
+# =============================================================
+# SÍ:  `.env` (fuera de git, con un .env.example versionado),
+#      variables de entorno inyectadas por el orquestador, o
+#      Docker secrets / un gestor externo (Vault, SSM).
+# NO:  hardcodeados en el compose, y JAMÁS en la imagen —
+#      quedan en el historial de capas y `docker history` los
+#      revela aunque los borres en una capa posterior.
+#
+# =============================================================
+# 7. ¿CUÁNDO PASAR A KUBERNETES?
+# =============================================================
+# El límite de Compose: UN SOLO HOST. Sin autoescalado, sin
+# self-healing entre nodos, sin rolling updates de verdad. Si ese
+# host muere, se cae todo.
+#
+#   Compose            ->  Kubernetes
+#   -------------------    ----------------------------------
+#   service + replicas ->  Deployment (réplicas, rolling update)
+#   DNS interno        ->  Service (descubrimiento y balanceo)
+#   ports / nginx      ->  Ingress
+#   environment/.env   ->  ConfigMap / Secret
+#   named volume       ->  PersistentVolumeClaim
+#   (no existe)        ->  HPA (autoescalado)
+#   db con volumen     ->  StatefulSet
+#
+# MATIZ QUE SUMA: para Postgres, aunque exista StatefulSet, en
+# producción casi siempre conviene una BD GESTIONADA (RDS) en vez
+# de correrla en el clúster. Un StatefulSet te da el almacenamiento
+# persistente, pero no backups, ni failover, ni parches: sigues
+# haciendo tú el trabajo de DBA. Enlaza directo con P11.
